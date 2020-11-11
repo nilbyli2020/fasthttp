@@ -391,7 +391,7 @@ type Server struct {
 	// We need to know our listeners so we can close them in Shutdown().
 	ln []net.Listener
 
-	mu   sync.Mutex
+	mu   sync.RWMutex
 	open int32
 	stop int32
 	done chan struct{}
@@ -1609,6 +1609,54 @@ func (s *Server) ServeTLSEmbed(ln net.Listener, certData, keyData []byte) error 
 	)
 }
 
+var errNoCertificates = errors.New("tls: no certificates configured")
+
+// GetCertificate returns a Certificate based on the given
+func (s *Server) GetCertificate(clientHello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if len(s.tlsConfig.NameToCertificate) == 0 {
+		return nil, errNoCertificates
+	}
+
+	name := strings.ToLower(clientHello.ServerName)
+	if cert, ok := s.tlsConfig.NameToCertificate[name]; ok {
+		return cert, nil
+	}
+	if len(name) > 0 {
+		labels := strings.Split(name, ".")
+		labels[0] = "*"
+		wildcardName := strings.Join(labels, ".")
+		if cert, ok := s.tlsConfig.NameToCertificate[wildcardName]; ok {
+			return cert, nil
+		}
+	}
+
+	// If nothing matches, return the first certificate.
+	return nil, errNoCertificates
+}
+
+// AppendCertByName appends certificate and keyfile to TLS Configuration NameToCertificate
+func (s *Server) AppendCertByName(name, certFile, keyFile string) error {
+	if len(certFile) == 0 && len(keyFile) == 0 {
+		return errNoCertOrKeyProvided
+	}
+
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return fmt.Errorf("cannot load TLS key pair from certFile=%q and keyFile=%q: %s", certFile, keyFile, err)
+	}
+
+	s.configTLS()
+
+	s.mu.Lock()
+	s.tlsConfig.NameToCertificate[name] = &cert
+	s.mu.Unlock()
+
+	return nil
+}
+
 // AppendCert appends certificate and keyfile to TLS Configuration.
 //
 // This function allows programmer to handle multiple domains
@@ -1617,7 +1665,6 @@ func (s *Server) AppendCert(certFile, keyFile string) error {
 	if len(certFile) == 0 && len(keyFile) == 0 {
 		return errNoCertOrKeyProvided
 	}
-
 	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
 		return fmt.Errorf("cannot load TLS key pair from certFile=%q and keyFile=%q: %s", certFile, keyFile, err)
