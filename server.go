@@ -1612,29 +1612,31 @@ func (s *Server) ServeTLSEmbed(ln net.Listener, certData, keyData []byte) error 
 var errNoCertificates = errors.New("tls: no certificates configured")
 
 // GetCertificate returns a Certificate based on the given
-func (s *Server) GetCertificate(clientHello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+func (s *Server) GetCertificate() func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+	return func(clientHello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
 
-	if len(s.tlsConfig.NameToCertificate) == 0 {
-		return nil, errNoCertificates
-	}
+		if len(s.tlsConfig.NameToCertificate) == 0 {
+			return nil, errNoCertificates
+		}
 
-	name := strings.ToLower(clientHello.ServerName)
-	if cert, ok := s.tlsConfig.NameToCertificate[name]; ok {
-		return cert, nil
-	}
-	if len(name) > 0 {
-		labels := strings.Split(name, ".")
-		labels[0] = "*"
-		wildcardName := strings.Join(labels, ".")
-		if cert, ok := s.tlsConfig.NameToCertificate[wildcardName]; ok {
+		name := strings.ToLower(clientHello.ServerName)
+		if cert, ok := s.tlsConfig.NameToCertificate[name]; ok {
 			return cert, nil
 		}
-	}
+		if len(name) > 0 {
+			labels := strings.Split(name, ".")
+			labels[0] = "*"
+			wildcardName := strings.Join(labels, ".")
+			if cert, ok := s.tlsConfig.NameToCertificate[wildcardName]; ok {
+				return cert, nil
+			}
+		}
 
-	// If nothing matches, return the first certificate.
-	return nil, errNoCertificates
+		// If nothing matches, return the first certificate.
+		return nil, errNoCertificates
+	}
 }
 
 // AppendCertByName appends certificate and keyfile to TLS Configuration NameToCertificate
@@ -1698,6 +1700,7 @@ func (s *Server) configTLS() {
 	if s.tlsConfig == nil {
 		s.tlsConfig = &tls.Config{
 			PreferServerCipherSuites: true,
+			GetCertificate:           s.GetCertificate(),
 		}
 	}
 }
